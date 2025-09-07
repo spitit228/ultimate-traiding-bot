@@ -5,7 +5,7 @@ import requests
 import time
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 # Исправляем кодировку для Windows
@@ -286,6 +286,109 @@ class FixedAIAssistant:
         else:
             return f"Интересный вопрос о '{question}'. Рекомендую изучить основы технического анализа и риск-менеджмента. Всегда торгуйте осторожно!"
 
+class SubscriptionManager:
+    """Управление подписками и пробными периодами"""
+    
+    def __init__(self):
+        self.data_file = 'subscription_data.json'
+        self.subscriptions = self._load_data()
+        
+    def _load_data(self):
+        """Загрузка данных о подписках"""
+        try:
+            if os.path.exists(self.data_file):
+                with open(self.data_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"❌ Subscription load error: {e}")
+        return {}
+    
+    def _save_data(self):
+        """Сохранение данных о подписках"""
+        try:
+            with open(self.data_file, 'w', encoding='utf-8') as f:
+                json.dump(self.subscriptions, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"❌ Subscription save error: {e}")
+    
+    def start_trial(self, user_id, start_date=None):
+        """Запуск пробного периода"""
+        if start_date is None:
+            start_date = "2024-08-08"  # 8 августа как указано в задаче
+            
+        user_id = str(user_id)
+        if user_id not in self.subscriptions:
+            self.subscriptions[user_id] = {
+                'status': 'trial',
+                'trial_start': start_date,
+                'trial_days': 30,
+                'cancelled': False,
+                'cancel_date': None
+            }
+            self._save_data()
+            return True
+        return False
+    
+    def cancel_subscription(self, user_id):
+        """Отмена подписки"""
+        user_id = str(user_id)
+        if user_id in self.subscriptions:
+            self.subscriptions[user_id]['cancelled'] = True
+            self.subscriptions[user_id]['cancel_date'] = datetime.now().isoformat()
+            self.subscriptions[user_id]['status'] = 'cancelled'
+            self._save_data()
+            return True
+        return False
+    
+    def get_subscription_status(self, user_id):
+        """Получение статуса подписки"""
+        user_id = str(user_id)
+        if user_id not in self.subscriptions:
+            return {
+                'status': 'none',
+                'message': 'Подписка не активирована'
+            }
+        
+        sub = self.subscriptions[user_id]
+        
+        if sub['cancelled']:
+            return {
+                'status': 'cancelled',
+                'message': f"Подписка отменена {sub.get('cancel_date', 'Unknown')}",
+                'can_use': False
+            }
+        
+        if sub['status'] == 'trial':
+            trial_start = datetime.strptime(sub['trial_start'], '%Y-%m-%d')
+            trial_end = trial_start + timedelta(days=sub['trial_days'])
+            days_left = (trial_end - datetime.now()).days
+            
+            if days_left > 0:
+                return {
+                    'status': 'trial_active',
+                    'message': f"Пробный период: осталось {days_left} дней",
+                    'can_use': True,
+                    'days_left': days_left,
+                    'trial_end': trial_end.strftime('%Y-%m-%d')
+                }
+            else:
+                return {
+                    'status': 'trial_expired',
+                    'message': 'Пробный период истек',
+                    'can_use': False
+                }
+        
+        return {
+            'status': 'unknown',
+            'message': 'Статус подписки неизвестен',
+            'can_use': False
+        }
+    
+    def can_use_bot(self, user_id):
+        """Проверка, может ли пользователь использовать бота"""
+        status = self.get_subscription_status(user_id)
+        return status.get('can_use', False)
+
 def generate_multi_leverage_orders(analysis_data, coin):
     """Генерация 5 ордеров с разными плечами"""
     if not analysis_data or not analysis_data.get('basic'):
@@ -402,7 +505,17 @@ def create_main_menu():
         'inline_keyboard': [
             [{'text': '📊 Анализ монет', 'callback_data': 'analysis'}, {'text': '🤖 AI-Помощник', 'callback_data': 'ai'}],
             [{'text': '⚡ Быстрые сигналы', 'callback_data': 'quick_signals'}, {'text': '🔥 Топ монеты', 'callback_data': 'top_coins'}],
-            [{'text': '❓ Помощь', 'callback_data': 'help'}]
+            [{'text': '💳 Подписка', 'callback_data': 'subscription'}, {'text': '❓ Помощь', 'callback_data': 'help'}]
+        ]
+    }
+
+def create_subscription_menu():
+    return {
+        'inline_keyboard': [
+            [{'text': '📊 Статус подписки', 'callback_data': 'sub_status'}],
+            [{'text': '🚀 Активировать пробный период', 'callback_data': 'start_trial'}],
+            [{'text': '❌ Отменить подписку', 'callback_data': 'cancel_sub'}],
+            [{'text': '🔙 Назад', 'callback_data': 'main'}]
         ]
     }
 
@@ -446,11 +559,16 @@ def format_quick_signals(signals):
     text += f"_Обновлено: {datetime.now().strftime('%H:%M:%S')}_"
     return text
 
-def handle_start(chat_id, bot):
-    text = """
+def handle_start(chat_id, bot, subscription_manager):
+    # Проверяем статус подписки
+    status = subscription_manager.get_subscription_status(chat_id)
+    status_text = f"\n**📋 Статус:** {status['message']}"
+    
+    text = f"""
 🚀 **ULTIMATE TRADING BOT v3.0**
 
 Самый продвинутый торговый бот!
+{status_text}
 
 **🔥 НОВЫЕ ВОЗМОЖНОСТИ:**
 • 📊 30+ монет для анализа
@@ -458,17 +576,169 @@ def handle_start(chat_id, bot):
 • ⚡ Исправленные быстрые сигналы
 • 🤖 Улучшенный AI-помощник
 • 📈 Мультисигнальный анализ
+• 💳 Управление подпиской
 
 Выберите действие:
 """
     bot.send_message(chat_id, text, create_main_menu())
 
-def handle_callback(callback_data, chat_id, message_id, callback_query_id, bot, analyzer, ai):
+def handle_callback(callback_data, chat_id, message_id, callback_query_id, bot, analyzer, ai, subscription_manager):
     bot.answer_callback_query(callback_query_id)
     
+    # Проверяем доступ к боту для большинства функций
+    protected_actions = ['analysis', 'coin_', 'quick_signals', 'ai']
+    needs_subscription = any(callback_data.startswith(action) for action in protected_actions)
+    
+    if needs_subscription and not subscription_manager.can_use_bot(chat_id):
+        status = subscription_manager.get_subscription_status(chat_id)
+        text = f"""
+❌ **ДОСТУП ОГРАНИЧЕН**
+
+{status['message']}
+
+Для использования бота активируйте пробный период или подпишитесь.
+
+💳 **Управление подпиской** → /start
+"""
+        bot.edit_message(chat_id, message_id, text, {'inline_keyboard': [[{'text': '🔙 В меню', 'callback_data': 'main'}]]})
+        return
+    
     if callback_data == 'main':
-        text = "🚀 **ULTIMATE TRADING BOT v3.0**\n\nВыберите действие:"
+        status = subscription_manager.get_subscription_status(chat_id)
+        status_text = f"\n**📋 Статус:** {status['message']}"
+        text = f"🚀 **ULTIMATE TRADING BOT v3.0**{status_text}\n\nВыберите действие:"
         bot.edit_message(chat_id, message_id, text, create_main_menu())
+    
+    elif callback_data == 'subscription':
+        text = """
+💳 **УПРАВЛЕНИЕ ПОДПИСКОЙ**
+
+Управляйте вашей подпиской и пробным периодом.
+
+**📋 Доступные действия:**
+• Проверить статус подписки
+• Активировать 30-дневный пробный период
+• Отменить подписку
+"""
+        bot.edit_message(chat_id, message_id, text, create_subscription_menu())
+    
+    elif callback_data == 'sub_status':
+        status = subscription_manager.get_subscription_status(chat_id)
+        if status['status'] == 'trial_active':
+            text = f"""
+📊 **СТАТУС ПОДПИСКИ**
+
+✅ **Пробный период активен**
+
+📅 **Начало:** 8 августа 2024
+⏰ **Осталось:** {status['days_left']} дней
+📅 **Окончание:** {status['trial_end']}
+
+Вы можете отменить подписку в любое время.
+"""
+        elif status['status'] == 'cancelled':
+            text = f"""
+📊 **СТАТУС ПОДПИСКИ**
+
+❌ **Подписка отменена**
+
+{status['message']}
+
+Спасибо за использование нашего бота!
+"""
+        else:
+            text = f"""
+📊 **СТАТУС ПОДПИСКИ**
+
+⚠️ **{status['message']}**
+
+Активируйте пробный период для доступа к функциям бота.
+"""
+        
+        back_menu = {'inline_keyboard': [[{'text': '🔙 К подписке', 'callback_data': 'subscription'}]]}
+        bot.edit_message(chat_id, message_id, text, back_menu)
+    
+    elif callback_data == 'start_trial':
+        if subscription_manager.start_trial(chat_id):
+            text = """
+🚀 **ПРОБНЫЙ ПЕРИОД АКТИВИРОВАН!**
+
+✅ **30-дневный пробный период начался**
+
+📅 **Начало:** 8 августа 2024
+⏰ **Длительность:** 30 дней
+📅 **Окончание:** 7 сентября 2024
+
+Теперь у вас есть полный доступ ко всем функциям бота!
+
+**Что доступно:**
+• 📊 Анализ 30+ криптовалют
+• 🎯 Ордера с разными плечами
+• ⚡ Быстрые торговые сигналы
+• 🤖 AI-помощник
+
+Вы можете отменить подписку в любое время.
+"""
+        else:
+            status = subscription_manager.get_subscription_status(chat_id)
+            text = f"""
+⚠️ **ПРОБНЫЙ ПЕРИОД УЖЕ АКТИВИРОВАН**
+
+{status['message']}
+
+Если у вас есть вопросы, обратитесь в поддержку.
+"""
+        
+        back_menu = {'inline_keyboard': [[{'text': '🔙 К подписке', 'callback_data': 'subscription'}]]}
+        bot.edit_message(chat_id, message_id, text, back_menu)
+    
+    elif callback_data == 'cancel_sub':
+        confirm_menu = {
+            'inline_keyboard': [
+                [{'text': '✅ Да, отменить', 'callback_data': 'confirm_cancel'}, {'text': '❌ Нет, оставить', 'callback_data': 'subscription'}]
+            ]
+        }
+        
+        text = """
+⚠️ **ПОДТВЕРЖДЕНИЕ ОТМЕНЫ**
+
+Вы действительно хотите отменить подписку?
+
+**После отмены:**
+• Доступ к боту будет заблокирован
+• Все функции станут недоступны
+• Отмена необратима
+
+Подтвердите ваш выбор:
+"""
+        bot.edit_message(chat_id, message_id, text, confirm_menu)
+    
+    elif callback_data == 'confirm_cancel':
+        if subscription_manager.cancel_subscription(chat_id):
+            text = """
+✅ **ПОДПИСКА ОТМЕНЕНА**
+
+Ваша подписка успешно отменена.
+
+**📋 Информация:**
+• Доступ к боту заблокирован
+• Все функции недоступны  
+• Дата отмены сохранена
+
+Спасибо за использование Ultimate Trading Bot!
+
+Если захотите вернуться, обратитесь в поддержку.
+"""
+        else:
+            text = """
+❌ **ОШИБКА ОТМЕНЫ**
+
+Не удалось отменить подписку.
+Обратитесь в поддержку для решения вопроса.
+"""
+        
+        back_menu = {'inline_keyboard': [[{'text': '🔙 В меню', 'callback_data': 'main'}]]}
+        bot.edit_message(chat_id, message_id, text, back_menu)
     
     elif callback_data == 'analysis':
         text = "📊 **Выберите монету для анализа:**\n\n_30+ лучших монет для фьючерсной торговли_"
@@ -522,6 +792,12 @@ def handle_callback(callback_data, chat_id, message_id, callback_query_id, bot, 
 • ⚡ Быстрые сигналы (исправлены)
 • 🤖 AI-помощник с заготовленными ответами
 • 📈 Мультисигнальный анализ
+• 💳 Управление подпиской (30-дневный пробный период)
+
+**💳 ПОДПИСКА:**
+• Пробный период: 30 дней бесплатно
+• Начало: 8 августа 2024
+• Можно отменить в любое время
 
 **⚠️ ВАЖНО:**
 • Начинайте с малых плеч (2-5x)
@@ -533,10 +809,17 @@ def handle_callback(callback_data, chat_id, message_id, callback_query_id, bot, 
 """
         bot.edit_message(chat_id, message_id, help_text, {'inline_keyboard': [[{'text': '🔙 Назад', 'callback_data': 'main'}]]})
 
-def handle_text(text, chat_id, bot, ai):
+def handle_text(text, chat_id, bot, ai, subscription_manager):
     session = bot.user_sessions.get(chat_id, {})
     
     if session.get('mode') == 'ai_question':
+        # Проверяем доступ к AI-помощнику
+        if not subscription_manager.can_use_bot(chat_id):
+            status = subscription_manager.get_subscription_status(chat_id)
+            bot.send_message(chat_id, f"❌ **Доступ к AI-помощнику ограничен**\n\n{status['message']}\n\nАктивируйте пробный период: /start")
+            bot.user_sessions[chat_id] = {}
+            return
+            
         bot.send_message(chat_id, "🤖 Обрабатываю ваш вопрос...")
         response = ai.get_response(text)
         bot.send_message(chat_id, f"**❓ Вопрос:** {text}\n\n**🤖 Ответ:** {response}\n\n_Задайте еще вопрос или /start для меню_")
@@ -550,6 +833,7 @@ def main():
     print(f"YOUR_CHAT_ID: {'✅' if YOUR_CHAT_ID else '❌'}")
     print(f"HUGGINGFACE_API_KEY: {'✅ AI включен' if HUGGINGFACE_API_KEY else '⚠️ Только заготовленные ответы'}")
     print(f"COINS: {len(TOP_FUTURES_COINS)} монет доступно")
+    print("💳 SUBSCRIPTION: Включено управление подписками")
     
     if not TELEGRAM_TOKEN or not YOUR_CHAT_ID:
         print("❌ Нужны TELEGRAM_TOKEN и YOUR_CHAT_ID!")
@@ -558,6 +842,7 @@ def main():
     bot = UltimateTradingBot(TELEGRAM_TOKEN)
     analyzer = UltimateAnalyzer()
     ai = FixedAIAssistant(HUGGINGFACE_API_KEY)
+    subscription_manager = SubscriptionManager()
     
     bot.send_message(YOUR_CHAT_ID, f"""🚀 **Ultimate Trading Bot v3.0 запущен!**
 
@@ -565,6 +850,7 @@ def main():
 ✅ 5 ордеров с разными плечами
 ✅ Исправленные быстрые сигналы
 ✅ AI-помощник
+✅ Управление подпиской (30-дневный пробный период)
 
 Время: {datetime.now().strftime('%H:%M:%S')}""")
     
@@ -584,9 +870,9 @@ def main():
                         text = message.get('text', '')
                         
                         if text == '/start':
-                            handle_start(chat_id, bot)
+                            handle_start(chat_id, bot, subscription_manager)
                         else:
-                            handle_text(text, chat_id, bot, ai)
+                            handle_text(text, chat_id, bot, ai, subscription_manager)
                     
                     elif 'callback_query' in update:
                         callback = update['callback_query']
@@ -595,7 +881,7 @@ def main():
                             callback['message']['chat']['id'],
                             callback['message']['message_id'],
                             callback['id'],
-                            bot, analyzer, ai
+                            bot, analyzer, ai, subscription_manager
                         )
             
             time.sleep(1)
